@@ -1,0 +1,14 @@
+{
+  "name": "PDFページ抽出ツール",
+  "short_name": "PDF抽出",
+  "description": "必要なページだけを選んでPDFとして保存",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4f7fa",
+  "theme_color": "#1769aa",
+  "icons": [
+    {"src":"./icons/icon-192.png","sizes":"192x192","type":"image/png"},
+    {"src":"./icons/icon-512.png","sizes":"512x512","type":"image/png"}
+  ]
+}

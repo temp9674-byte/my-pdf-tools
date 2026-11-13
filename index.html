@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1769aa">
+  <meta name="description" content="PDFから必要なページだけを選んで保存できるツール">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/icon-192.png">
+  <title>PDFページ抽出ツール</title>
+  <style>
+    :root { color-scheme: light; --blue:#1769aa; --pale:#eaf4fc; --ink:#17212b; --muted:#607080; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,"Noto Sans JP",sans-serif; color:var(--ink); background:#f4f7fa; }
+    header { background:var(--blue); color:white; padding:20px 16px 18px; }
+    header h1 { font-size:1.25rem; margin:0 0 5px; }
+    header p { margin:0; font-size:.88rem; opacity:.92; }
+    main { max-width:850px; margin:0 auto; padding:16px; }
+    .panel { background:white; border-radius:16px; padding:16px; box-shadow:0 2px 12px #1020300d; margin-bottom:14px; }
+    .pick { border:2px dashed #9bbbd5; background:var(--pale); text-align:center; padding:22px 12px; border-radius:12px; }
+    input[type=file] { width:100%; max-width:100%; }
+    .hint { color:var(--muted); font-size:.82rem; line-height:1.6; margin:10px 0 0; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; margin-bottom:12px; }
+    .actions { display:flex; flex-wrap:wrap; gap:8px; }
+    button { border:0; border-radius:10px; padding:11px 14px; font-size:.92rem; font-weight:650; background:var(--blue); color:white; cursor:pointer; }
+    button.secondary { background:#e8eef4; color:#203040; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .count { color:var(--muted); font-size:.9rem; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(112px,1fr)); gap:10px; }
+    .page { position:relative; border:2px solid #e0e7ee; border-radius:11px; padding:7px; background:white; cursor:pointer; min-width:0; }
+    .page.selected { border-color:var(--blue); background:#edf6ff; }
+    .page canvas { display:block; width:100%; height:auto; background:white; border-radius:4px; }
+    .page .num { display:flex; justify-content:space-between; gap:4px; align-items:center; padding:7px 2px 1px; font-size:.82rem; }
+    .check { color:var(--blue); font-weight:800; }
+    .status { min-height:1.4em; color:var(--muted); font-size:.88rem; margin-top:10px; overflow-wrap:anywhere; }
+    .notice { font-size:.82rem; color:var(--muted); line-height:1.6; }
+    .hidden { display:none !important; }
+    @media (min-width:600px) { header { padding-left:max(16px,calc((100% - 818px)/2)); } }
+  </style>
+</head>
+<body>
+<header>
+  <h1>📄 PDFページ抽出ツール</h1>
+  <p>必要なページだけ選んで、新しいPDFとして保存できます。</p>
+</header>
+<main>
+  <section class="panel">
+    <div class="pick">
+      <strong>PDFファイルを選択</strong>
+      <p><input id="file" type="file" accept="application/pdf,.pdf"></p>
+      <p class="hint">選んだPDFはこの端末のブラウザ内で処理します。サーバーへアップロードしません。</p>
+    </div>
+    <div id="fileInfo" class="status" aria-live="polite">まだPDFが選択されていません。</div>
+  </section>
+
+  <section id="work" class="panel hidden">
+    <div class="toolbar">
+      <div><strong>残したいページを選択</strong><div id="count" class="count">0ページ選択中</div></div>
+      <div class="actions">
+        <button class="secondary" id="all">すべて選択</button>
+        <button class="secondary" id="none">すべて解除</button>
+      </div>
+    </div>
+    <div id="pages" class="grid"></div>
+    <div style="margin-top:16px">
+      <button id="save" disabled>選択したページをPDFで保存</button>
+      <div id="status" class="status" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <section class="panel notice">
+    <strong>使い方</strong><br>
+    1. PDFを選択 → 2. 残したいページをタップ → 3.「選択したページをPDFで保存」を押します。<br>
+    ※ページを1枚も選ばないと保存できません。元のPDFは変更されません。
+  </section>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://unpkg.com/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const fileInput = $('file'), work = $('work'), pagesEl = $('pages');
+  let sourceBytes = null, selected = new Set(), pageCount = 0, sourceName = 'extracted.pdf';
+
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+  }
+  if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+  function updateCount() {
+    $('count').textContent = `${selected.size} / ${pageCount}ページ選択中`;
+    $('save').disabled = selected.size === 0;
+  }
+  function setStatus(message) { $('status').textContent = message; }
+
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
+      $('fileInfo').textContent = 'PDFファイルを選んでください。'; return;
+    }
+    try {
+      $('fileInfo').textContent = 'PDFを読み込んでいます…';
+      setStatus('');
+      sourceBytes = new Uint8Array(await file.arrayBuffer());
+      sourceName = file.name.replace(/\.pdf$/i, '') || 'document';
+      const pdf = await pdfjsLib.getDocument({data: sourceBytes.slice()}).promise;
+      pageCount = pdf.numPages;
+      selected = new Set(Array.from({length:pageCount}, (_,i)=>i));
+      pagesEl.replaceChildren();
+      work.classList.remove('hidden');
+      $('fileInfo').textContent = `${file.name}（${pageCount}ページ）`;
+      for (let n=1; n<=pageCount; n++) {
+        const page = await pdf.getPage(n);
+        const viewport = page.getViewport({scale: Math.min(1.2, 150 / page.getViewport({scale:1}).width)});
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = Math.floor(viewport.width * 1.5);
+        canvas.height = Math.floor(viewport.height * 1.5);
+        await page.render({canvasContext:ctx, viewport:page.getViewport({scale:viewport.scale*1.5})}).promise;
+        const card = document.createElement('div');
+        card.className = 'page selected';
+        card.setAttribute('role','checkbox');
+        card.setAttribute('aria-checked','true');
+        card.setAttribute('tabindex','0');
+        card.append(canvas);
+        const label = document.createElement('div'); label.className='num';
+        label.innerHTML = `<span>ページ ${n}</span><span class="check">✓</span>`;
+        card.append(label);
+        const toggle = () => {
+          if (selected.has(n-1)) selected.delete(n-1); else selected.add(n-1);
+          card.classList.toggle('selected', selected.has(n-1));
+          card.setAttribute('aria-checked', String(selected.has(n-1)));
+          label.querySelector('.check').textContent = selected.has(n-1) ? '✓' : '';
+          updateCount();
+        };
+        card.addEventListener('click', toggle);
+        card.addEventListener('keydown', e => { if(e.key==='Enter'||e.key===' '){e.preventDefault();toggle();} });
+        pagesEl.append(card);
+      }
+      updateCount();
+    } catch (err) {
+      console.error(err);
+      $('fileInfo').textContent = '読み込みに失敗しました。パスワード保護や破損したPDFでないか確認してください。';
+      work.classList.add('hidden');
+    }
+  });
+
+  $('all').addEventListener('click', () => {
+    selected = new Set(Array.from({length:pageCount},(_,i)=>i));
+    [...pagesEl.children].forEach(card => { card.classList.add('selected'); card.setAttribute('aria-checked','true'); card.querySelector('.check').textContent='✓'; });
+    updateCount();
+  });
+  $('none').addEventListener('click', () => {
+    selected.clear();
+    [...pagesEl.children].forEach(card => { card.classList.remove('selected'); card.setAttribute('aria-checked','false'); card.querySelector('.check').textContent=''; });
+    updateCount();
+  });
+  $('save').addEventListener('click', async () => {
+    if (!sourceBytes || selected.size===0) return;
+    try {
+      $('save').disabled = true; setStatus('PDFを作成しています…');
+      const { PDFDocument } = PDFLib;
+      const src = await PDFDocument.load(sourceBytes);
+      const out = await PDFDocument.create();
+      const indices = [...selected].sort((a,b)=>a-b);
+      const copied = await out.copyPages(src, indices);
+      copied.forEach(p=>out.addPage(p));
+      const bytes = await out.save();
+      const blob = new Blob([bytes], {type:'application/pdf'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href=url; a.download=`${sourceName}_抽出.pdf`;
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 30000);
+      setStatus(`${indices.length}ページのPDFを保存しました。`);
+    } catch(err) {
+      console.error(err); setStatus('保存に失敗しました。別のPDFでもお試しください。');
+    } finally { updateCount(); }
+  });
+})();
+</script>
+</body>
+</html>
