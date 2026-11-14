@@ -1,7 +1,7 @@
 {
-  "name": "PDFページ抽出ツール",
-  "short_name": "PDF抽出",
-  "description": "必要なページだけを選んでPDFとして保存",
+  "name": "PDFツール",
+  "short_name": "PDFツール",
+  "description": "PDFのページ抽出・結合・圧縮",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
