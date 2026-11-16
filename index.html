@@ -83,11 +83,14 @@
 
   <section id="mergePanel" class="tool-panel hidden">
     <section class="panel">
-      <strong>結合するPDFを複数選択</strong>
+      <strong>結合するPDFを追加</strong>
       <p><input id="mergeFiles" type="file" accept="application/pdf,.pdf" multiple></p>
-      <p class="hint">選択した順番で結合します。ファイル選択画面で順番を確認して選んでね。</p>
-      <div id="mergeList" class="status">まだファイルが選択されていません。</div>
-      <button id="mergeBtn" disabled>PDFを結合して保存</button>
+      <p class="hint">一度に複数選んでも、1つずつ何度かに分けて追加してもOK。追加した順番で結合します。</p>
+      <div id="mergeList" class="status">まだファイルが追加されていません。</div>
+      <div class="actions" style="margin-top:12px">
+        <button id="mergeBtn" disabled>PDFを結合して保存</button>
+        <button id="mergeClear" class="secondary" disabled>選択をクリア</button>
+      </div>
       <div id="mergeStatus" class="status" aria-live="polite"></div>
     </section>
   </section>
@@ -179,33 +182,68 @@
     catch(err){console.error(err);setStatus('保存に失敗しました。別のPDFでもお試しください。');} finally{updateCount();}
   });
 
-  // Merge PDFs
+  // Merge PDFs: each file-picker selection is appended to the existing queue.
   let mergeSelection=[];
+  let merging=false;
+  function renderMergeList(){
+    const listEl=$('mergeList');
+    listEl.replaceChildren();
+    if(!mergeSelection.length){
+      listEl.textContent='まだファイルが追加されていません。';
+    } else {
+      const list=document.createElement('ol'); list.className='file-list';
+      mergeSelection.forEach((file,index)=>{
+        const li=document.createElement('li');
+        li.append(document.createTextNode(`${file.name}（${formatBytes(file.size)}） `));
+        const remove=document.createElement('button');
+        remove.type='button'; remove.className='secondary'; remove.textContent='削除';
+        remove.disabled=merging;
+        remove.addEventListener('click',()=>{
+          mergeSelection.splice(index,1); renderMergeList(); $('mergeStatus').textContent='';
+        });
+        li.append(remove); list.append(li);
+      });
+      listEl.append(list);
+      if(mergeSelection.length<2){
+        const hint=document.createElement('div');
+        hint.textContent='あと1つ以上PDFを追加してください。'; listEl.append(hint);
+      }
+    }
+    $('mergeBtn').disabled=merging||mergeSelection.length<2;
+    $('mergeClear').disabled=merging||mergeSelection.length===0;
+  }
   $('mergeFiles').addEventListener('change',()=>{
-    mergeSelection=Array.from($('mergeFiles').files||[]);
-    $('mergeBtn').disabled=mergeSelection.length<2;
-    $('mergeList').innerHTML='';
-    if(!mergeSelection.length){$('mergeList').textContent='まだファイルが選択されていません。';return;}
-    const list=document.createElement('ol'); list.className='file-list';
-    mergeSelection.forEach(f=>{const li=document.createElement('li');li.textContent=`${f.name}（${formatBytes(f.size)}）`;list.append(li);});
-    $('mergeList').append(list);
-    if(mergeSelection.length<2)$('mergeList').append('結合にはPDFを2つ以上選んでください。');
+    // Capture the newly selected files before clearing the input. Clearing lets
+    // Android select the same file again later and prevents FileList replacement.
+    const added=Array.from($('mergeFiles').files||[]);
+    $('mergeFiles').value='';
+    if(!added.length)return;
+    mergeSelection.push(...added);
+    renderMergeList();
     $('mergeStatus').textContent='';
   });
+  $('mergeClear').addEventListener('click',()=>{
+    if(merging)return;
+    mergeSelection=[]; renderMergeList(); $('mergeStatus').textContent='';
+  });
   $('mergeBtn').addEventListener('click',async()=>{
-    if(mergeSelection.length<2)return;
+    if(merging||mergeSelection.length<2)return;
+    // Keep a stable snapshot for the duration of the merge.
+    const filesToMerge=mergeSelection.slice();
+    merging=true; renderMergeList();
     try{
-      $('mergeBtn').disabled=true;$('mergeStatus').textContent='PDFを結合しています…';
+      $('mergeStatus').textContent='PDFを結合しています…';
       const out=await PDFLib.PDFDocument.create();
-      for(let i=0;i<mergeSelection.length;i++){
-        const bytes=new Uint8Array(await mergeSelection[i].arrayBuffer());
+      for(let i=0;i<filesToMerge.length;i++){
+        $('mergeStatus').textContent=`PDFを結合しています… ${i+1} / ${filesToMerge.length}`;
+        const bytes=new Uint8Array(await filesToMerge[i].arrayBuffer());
         const src=await PDFLib.PDFDocument.load(bytes);
         const copied=await out.copyPages(src,src.getPageIndices()); copied.forEach(p=>out.addPage(p));
       }
       const result=await out.save(); downloadPdf(result,'結合したPDF.pdf');
-      $('mergeStatus').textContent=`${mergeSelection.length}個のPDFを結合しました（${formatBytes(result.length)}）。`;
+      $('mergeStatus').textContent=`${filesToMerge.length}個のPDFを結合しました（${formatBytes(result.length)}）。`;
     }catch(err){console.error(err);$('mergeStatus').textContent='結合できませんでした。破損・パスワード保護されたPDFでないか確認してください。';}
-    finally{$('mergeBtn').disabled=mergeSelection.length<2;}
+    finally{merging=false; renderMergeList();}
   });
 
   // Compress by rasterizing each page to JPEG. This trades searchable text for smaller image-based pages.
